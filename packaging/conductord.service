@@ -1,0 +1,26 @@
+# Starting point only: harden (capabilities, ProtectSystem, etc.) for your product before shipping.
+[Unit]
+Description=scx-conductor workload-adaptive sched_ext governor
+ConditionPathExists=/sys/kernel/sched_ext
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scx-conductor
+# Generate-on-device platforms need --dev-self-sign (dev/test). Approved-only platforms use --approved-dir instead.
+ExecStart=/usr/bin/python3 -I -m conductord run \
+    --pubkey /etc/conductor/trusted.pub \
+    --approved-dir /etc/conductor/approved \
+    --state /var/lib/conductor \
+    --bpf-obj /opt/scx-conductor/build/scx_conductor.bpf.o \
+    --loader /opt/scx-conductor/build/conductor_load
+Environment=PYTHONPATH=/opt/scx-conductor
+RuntimeDirectory=conductor
+StateDirectory=conductor
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
