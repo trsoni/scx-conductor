@@ -168,11 +168,11 @@ def mapping():
     s.box(590, 40, 480, 30, "scx-conductor: sched_ext schedulers for running workloads", [], "gov", tsize=12)
     rows = [
         ("Shield: small eBPF program attached to a live system", "Scheduler: struct_ops program specialised per workload"),
-        ("Agents generate and validate shields per vulnerability", "Forge specialises a reviewed template (no on-device codegen)"),
-        ("Test the shield against exploit and real workloads", "Canary in SWITCH_PARTIAL mode + latency probe"),
+        ("Agents generate and validate shields per vulnerability", "LLM backend writes the scheduler C on the device; gates + build + kernel verifier"),
+        ("Test the shield against exploit and real workloads", "Canary in SWITCH_PARTIAL mode: latency probe, starvation, telemetry"),
         ("Monitor impact before enforcing", "Partial mode: only opted-in tasks are scheduled by it"),
-        ("Operator approves what is deployed", "approved_only platforms load pre-signed manifests only"),
-        ("Signed and verified before loading; kernel verifier", "Ed25519 manifest + BPF digest + bounds; kernel verifier"),
+        ("Operator approves what is deployed", "gen-approve signs the digests; approved_only platforms never generate"),
+        ("Signed and verified before loading; kernel verifier", "Ed25519 manifest pins obj/loader/source/approval digests; kernel verifier"),
         ("Live protection, no restart, removable", "Hot load / unload; closing the link ⇒ stock scheduler"),
         ("TPM-backed record of load / removal", "Hash-chained audit log, head extended into a TPM PCR"),
         ("Same operation can be exploit or legitimate request", "Same CPU can be a game or a build: classify, don't guess"),
@@ -269,6 +269,54 @@ def sequence():
     s.save("sequence-switch.svg")
 
 
+# ------------------------------------------------------------------ 5. on-device generation pipeline
+def generation():
+    s = Svg(1100, 580, "On-device generation: model writes the scheduler, gates and the kernel check it, an operator approves, a signed digest loads it")
+    W, G, X0 = 184, 30, 30
+    xs = [X0 + i * (W + G) for i in range(5)]
+    H = 128
+    R1, R2 = 52, 300
+    row1 = [
+        ("1 Context", ["numbers only: workload,", "platform, power state, arch,", "kernel, CPUs, limits, baseline", "+ 3 repo files as examples"], "sig"),
+        ("2 Backend", ["anthropic API | local command", "| template (tests)", "writes ONE C source file", "one request in, one file out"], "frg"),
+        ("3 Static gate", ["ASCII, <= 48 KB, 2 includes", "no asm / extern / SEC / ##", "kfunc + helper allowlists", "fixed ops table + name"], "gov"),
+        ("4 Build", ["clang -target bpf -Wall", "ELF sections + 4 ABI maps", "bpftool skeleton", "cc -> gen_load (loader)"], "gov"),
+        ("5 Kernel verifier", ["gen_load --verify-only:", "struct_ops loaded, NOT attached", "kernel proves memory safety", "and termination"], "ker"),
+    ]
+    for x, (t, ls, k) in zip(xs, row1):
+        s.box(x, R1, W, H, t, ls, k, lsize=10.5)
+    for i in range(4):
+        s.arrow(xs[i] + W, R1 + H / 2, xs[i + 1], R1 + H / 2)
+
+    # repair loop: gate / build / verifier errors go back to the model as text
+    s.box(xs[1], 208, xs[3] + W - xs[1], 44, "", ["error text goes back to the model, up to 3 attempts (stored as 'failed' for debugging)"],
+          "saf", lsize=10.5)
+    s.arrow(xs[1] + 60, 208, xs[1] + 60, R1 + H, "repair", lx=xs[1] + 36, ly=190, lanchor="end")
+    s.arrow(xs[2] + W / 2, R1 + H, xs[2] + W / 2, 208)
+    s.arrow(xs[3] + W / 2, R1 + H, xs[3] + W / 2, 208)
+    s.poly([(xs[4] + 26, R1 + H), (xs[4] + 26, 230), (xs[3] + W, 230)], dashed=True)
+
+    row2 = [   # right to left
+        (4, "6 Early canary", ["partial mode, probe + hogs", "only if no other sched_ext", "scheduler is attached", "fail -> rejected, not repaired"], "ker"),
+        (3, "7 PENDING artifact", ["id = sha256(source)[:12]", "for one (workload, platform,", "arch, kernel release)", "never loadable as is"], "wht"),
+        (2, "8 Operator approval", ["conductord gen-approve <id>", "human reads review.md and the", "diff vs the reference", "signs approval.json (digests)"], "frg"),
+        (1, "9 Signed manifest", ["GenForge, template=scx_gen", "pins obj, loader, source,", "approval digests, kernel", "release, ops name, TTL"], "gov"),
+        (0, "10 Verify, canary, load", ["same fail-closed Verifier", "canary + starvation + telemetry", "load, sysfs ops == conductor_gen", "any failure: template scheduler"], "gov"),
+    ]
+    for idx, t, ls, k in row2:
+        s.box(xs[idx], R2, W, H, t, ls, k, lsize=10.5)
+    s.arrow(xs[4] + W / 2, R1 + H, xs[4] + W / 2, R2, "", lx=0)
+    s.text(xs[4] + W / 2 + 8, 264, "built + verified", 10, anchor="start", italic=True)
+    for idx in (4, 3, 2, 1):
+        s.arrow(xs[idx], R2 + H / 2, xs[idx - 1] + W, R2 + H / 2)
+
+    y = 462
+    s.box(30, y, 330, 96, "Who can stop it", ["the kernel: verifier, and the watchdog that", "ejects a stalled scheduler by itself", "a human: nothing loads without step 8", "the Verifier: any changed byte, arch or kernel"], "wht", lsize=10.5)
+    s.box(385, y, 330, 96, "What goes off the device", ["only the step 1 prompt, and only for the", "anthropic backend (gen --print-prompt shows it)", "no process names, paths, users or logs", "command / template backends stay local"], "wht", lsize=10.5)
+    s.box(740, y, 330, 96, "Not proven by any of this", ["that the scheduler is fair or fast: the verifier", "checks safety, not quality. That is what the", "canary, the runtime guard and the operator", "are for. Untuned, unmeasured."], "saf", lsize=10.5)
+    s.save("generation-pipeline.svg")
+
+
 if __name__ == "__main__":
-    architecture(); mapping(); lifecycle(); sequence()
+    architecture(); mapping(); lifecycle(); sequence(); generation()
     print("wrote", ", ".join(sorted(f for f in os.listdir(OUT) if f.endswith(".svg"))))

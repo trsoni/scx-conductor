@@ -14,11 +14,23 @@ on the stock scheduler.
 """
 from __future__ import annotations
 
+import functools
+import threading
 import time
 from typing import Callable, Optional
 
 from .forge import Manifest, Verifier
 from .audit import AuditLog
+
+
+def _locked(fn):
+    """Serialise lifecycle operations. The generator's early canary runs on another thread and
+    needs the (single) sched_ext slot, so it takes the same lock."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **kw):
+        with self.lock:
+            return fn(self, *a, **kw)
+    return wrapper
 
 
 def lat_breach(delta_lat: list, slo: dict) -> bool:
@@ -35,8 +47,13 @@ def lat_breach(delta_lat: list, slo: dict) -> bool:
 
 class Lifecycle:
     def __init__(self, host, verifier: Verifier, audit: AuditLog, profiles: dict, platform: str,
-                 canary_fn: Optional[Callable] = None, clock=time.monotonic):
+                 canary_fn: Optional[Callable] = None, clock=time.monotonic,
+                 host_factory: Optional[Callable] = None, lock: Optional[threading.RLock] = None):
+        # host_factory(manifest) -> host: lets a generated scheduler (its own loader binary)
+        # and the reference template (the shared loader) live behind one Lifecycle.
         self.host, self.verifier, self.audit = host, verifier, audit
+        self.host_factory = host_factory
+        self.lock = lock or threading.RLock()
         self.profiles, self.platform = profiles, platform
         self.pcfg = profiles["platforms"][platform]
         self.slo = profiles["slo"]
@@ -52,6 +69,7 @@ class Lifecycle:
         self._ticks = 0
 
     # ---------- apply / unload ----------
+    @_locked
     def apply(self, m: Manifest, psi_baseline: float = 0.0) -> tuple:
         h = m.hash
         if self.active and self.active.hash == h and self.host.alive():
@@ -68,6 +86,10 @@ class Lifecycle:
 
         if self.active:
             self.unload("switch")
+        if self.host_factory:
+            chosen = self.host_factory(m)
+            if chosen is not None:
+                self.host = chosen          # the previous host was stopped just above
 
         if self.pcfg.get("canary") and self.canary_fn and h not in self.canary_passed:
             self.audit.record("canary-start", name=m.name, manifest=h)
@@ -85,7 +107,7 @@ class Lifecycle:
             return False, "load failed"
 
         st = self.host.sched_ext_state()
-        if st.get("state") is not None and (st["state"] != "enabled" or st.get("ops") != "conductor"):
+        if st.get("state") is not None and (st["state"] != "enabled" or st.get("ops") != m.ops_name):
             self.host.stop()
             self.audit.record("load-failed", name=m.name, manifest=h, detail=f"sysfs state {st}")
             self._quarantine(h, "sysfs state mismatch")
@@ -94,9 +116,10 @@ class Lifecycle:
         self.active, self.synced = m, {}
         self.psi_baseline, self._psi_bad, self._lat_bad, self._last_lat = psi_baseline, 0, 0, None
         self.audit.record("load", name=m.name, manifest=h, params=m.body["params"], sched_ext=st,
-                          template_sha256=m.body["template_sha256"])
+                          template_sha256=m.body["template_sha256"], gen_id=m.body.get("gen_id"))
         return True, "loaded"
 
+    @_locked
     def unload(self, reason: str) -> None:
         if not self.active:
             return
@@ -105,11 +128,16 @@ class Lifecycle:
                           reason=reason, info=info)
         self.active, self.synced = None, {}
 
+    def is_quarantined(self, h: str) -> bool:
+        until = self.quarantine.get(h)
+        return until is not None and self.clock() < until
+
     def _quarantine(self, h: str, why: str) -> None:
         self.quarantine[h] = self.clock() + self.slo["quarantine_s"]
         self.audit.record("quarantine", manifest=h, reason=why, seconds=self.slo["quarantine_s"])
 
     # ---------- per-process class sync ----------
+    @_locked
     def sync_classes(self, assignments: dict) -> None:
         if not self.active or not self.host.alive():
             return
@@ -122,6 +150,7 @@ class Lifecycle:
             del self.synced[pid]
 
     # ---------- guard ----------
+    @_locked
     def tick(self, psi_some10: float) -> Optional[str]:
         """Call once per governor tick. Returns 'ejected' | 'rollback' | None."""
         if not self.active:

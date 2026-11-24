@@ -4,11 +4,14 @@
 
 | Layer | Needs | Command | Status when authored |
 |---|---|---|---|
-| Unit (classifier, debouncer, policy, forge/verifier, lifecycle, governor, audit, signals) | python3 + openssl | `python3 -m unittest discover -s tests` | **62 pass** (x86_64, Python 3.12) |
+| Unit (classifier, debouncer, policy, forge/verifier, lifecycle, governor, audit, signals, **generation**: gate, backends, build, store, generator, governor + canary integration) | python3 + openssl | `python3 -m unittest discover -s tests` | **211 run, 209 pass, 2 skipped** (x86_64, Python 3.12) |
 | Dry-run daemon | python3 + openssl | see README quick start | **ran clean**; audit chain verified |
-| Build (BPF + loader) | clang, libbpf, bpftool, scx headers | `make` | **not run** |
+| BPF + loader build against real scx / libbpf headers | clang, libbpf, bpftool, scx headers | `make` | **ran** in the authoring sandbox on x86_64 (object + loader); arm64 BPF object compiled, loader not linked; with a hand-made libelf shim, not distro packages |
+| Generation pipeline up to the kernel verifier | as above | `python3 -m conductord gen --gen-backend template ...` | **ran**: gate, clang, skeleton, loader link and `gen_load` execution; stops at the verifier because that kernel lacks sched_ext |
 | In-kernel stages | root + sched_ext kernel | `bash tests/guest/run_all.sh` | **not run** |
 | QEMU x86_64, arm64 | QEMU, kernel, rootfs | `tools/qemu/run-qemu.sh <arch>` | **not run** |
+
+The two skipped unit tests need a compiled object (`CONDUCTOR_TEST_OBJ`) or a real toolchain and say so.
 
 ## In-guest stages (`tests/guest/run_all.sh`)
 
@@ -21,9 +24,10 @@
 | `watchdog` | `--inject-stall` + a `SCHED_EXT` victim: kernel ejects within ~10 s, loader exits 3, sysfs `disabled` | `timeout_ms` handling, partial mode |
 | `ab-latency` | probe marked FG under hogs stays within 50 ms p99; FG-class counters move; prints baseline vs conductor | QEMU timing is noisy: **do not read performance from this stage** |
 | `governor` | pinned hold gaming -> camera -> rollback against the real kernel; a synthetic `steam` process causes a gaming scheduler to load; its exit replaces/unloads it; audit chain verifies and contains `canary-result`, `load`, `unload`; no `load-failed`, `ejected`, `governor-error` | `governor.log` in the stage output; `audit.jsonl` |
+| `gen` | `doctor` ready; template-backend `gen` builds, kernel-verifies and canaries an artifact that is `pending` and **not** loaded by a running governor; after `gen-approve` the governor loads it (`gen:<id>/gaming@vm/ac`) and the kernel reports ops `conductor_gen`; switching to camera gives ops `conductor`; rollback leaves the stock scheduler; a byte appended to the approved `gen_load` makes the governor fall back (`gen-unusable` audited); a source with inline asm is refused at `static-gate`; audit chain verifies and names the generated artifact in its `load` event | `doctor` output; `build.log` in the artifact directory; the loader's stderr (kernel verifier text); whether `--verify-only` really validates without attaching (assumed, not yet observed) |
 
 Results: stdout per stage, `build/guest-result.json` (arch, kernel, pass/fail/skip lists), and for QEMU
-`build/qemu-<arch>.log`. Skip slow stages with `skip-ab`, `skip-e2e`.
+`build/qemu-<arch>.log`. Skip slow stages with `skip-ab`, `skip-e2e`, `skip-gen`.
 
 ## What a green run proves, and what it does not
 
@@ -40,7 +44,22 @@ frame-time percentiles (games), input-to-photon latency (UI), dropped frames (vi
 tool calls (agentic), and package energy (RAPL / battery gauges / on-board power rails). Record in
 `memory/workload-profiles.md` with the kernel version, hardware and commit.
 
+## Generation tests (unit level)
+
+`tests/test_genstatic.py` (gate rules and ELF checks, including hostile spellings), `test_genbackends.py`
+(extraction, Anthropic request/response with a fake HTTP layer, key-file permissions, error redaction, command and
+template backends), `test_genbuild.py` (toolchain with fake tools: stage failures, limits, user drop),
+`test_genstore.py` (approval and manifest minting, tamper cases), `test_generator.py` (repair loop, never
+self-approving, cooldowns, single-flight), `test_gen_integration.py` (governor selection, fallback, quarantine,
+on-demand, control socket, host command lines, canary extras).
+The repair loop and the never-self-approve rule were mutation-checked: dropping the feedback, or approving
+automatically, makes tests fail.
+
 ## Known test gaps
+
+- No test calls a real model or a real clang-built object through the kernel verifier; the loader's `--verify-only`
+  semantics are unobserved.
+- The generation guest stage uses the template backend, so it exercises everything except what a model would write.
 
 - fd-tag classification is tested with a fake procfs; no test opens a real `/dev/video*` (QEMU has none).
 - No fuzzing of the loader's stdin protocol beyond "unknown command".

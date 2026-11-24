@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -30,6 +31,9 @@ class AuditLog:
         self.tpm_pcr = tpm_pcr
         self.use_tpm = use_tpm and shutil.which("tpm2_pcrextend") and os.path.exists("/dev/tpmrm0")
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        # The generation worker thread and the governor loop both write: serialise, or the
+        # hash chain forks.
+        self._lock = threading.Lock()
         self.seq, self.head = self._recover()
 
     def _recover(self):
@@ -51,17 +55,18 @@ class AuditLog:
         return r.returncode == 0
 
     def record(self, event: str, **data) -> dict:
-        self.seq += 1
-        entry = {"seq": self.seq, "ts": round(self.clock(), 3), "event": event, "data": data,
-                 "prev": self.head}
-        entry["hash"] = _h(self.head, {k: entry[k] for k in ("seq", "ts", "event", "data", "prev")})
-        entry["tpm"] = self._tpm_extend(entry["hash"])
-        with open(self.path, "a") as f:
-            f.write(json.dumps(entry, sort_keys=True) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        self.head = entry["hash"]
-        return entry
+        with self._lock:
+            self.seq += 1
+            entry = {"seq": self.seq, "ts": round(self.clock(), 3), "event": event, "data": data,
+                     "prev": self.head}
+            entry["hash"] = _h(self.head, {k: entry[k] for k in ("seq", "ts", "event", "data", "prev")})
+            entry["tpm"] = self._tpm_extend(entry["hash"])
+            with open(self.path, "a") as f:
+                f.write(json.dumps(entry, sort_keys=True) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            self.head = entry["hash"]
+            return entry
 
 
 def verify_chain(path: str) -> tuple:

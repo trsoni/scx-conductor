@@ -26,6 +26,8 @@ from .model import Params, Workload
 from .policy import build_params, validate_params
 
 TEMPLATE = "scx_conductor"
+GEN_TEMPLATE = "scx_gen"          # manifests for schedulers written on the device (genstore.py)
+GEN_OPS_NAME = "conductor_gen"
 KERNEL_MIN = "6.13"
 
 
@@ -49,6 +51,17 @@ def manifest_hash(body: dict) -> str:
 class Manifest:
     body: dict
     sig_b64: Optional[str] = None
+    # Where a generated scheduler's files live. NOT part of the signed body or the JSON:
+    # the verifier checks the files in this directory against digests that are signed.
+    artifact_dir: Optional[str] = None
+
+    @property
+    def is_generated(self) -> bool:
+        return self.body.get("template") == GEN_TEMPLATE
+
+    @property
+    def ops_name(self) -> str:
+        return self.body.get("ops_name", "conductor")
 
     @property
     def hash(self) -> str:
@@ -182,8 +195,10 @@ class ApprovedStore:
 
 # ---------------- verifier ----------------
 class Verifier:
-    def __init__(self, pub_key: str, bpf_obj: str, clock=time.time, max_skew_s: int = 300):
+    def __init__(self, pub_key: str, bpf_obj: str, clock=time.time, max_skew_s: int = 300,
+                 release: Optional[str] = None):
         self.pub_key, self.bpf_obj, self.clock, self.max_skew_s = pub_key, bpf_obj, clock, max_skew_s
+        self.release = release or _platform.release()
         self._digest = None
 
     def digest(self) -> str:
@@ -194,13 +209,25 @@ class Verifier:
     def verify(self, m: Manifest, platform: str) -> tuple:
         """Returns (ok, reason). Every check is fail-closed."""
         b = m.body
-        if b.get("schema") != 1 or b.get("template") != TEMPLATE:
+        gen = b.get("template") == GEN_TEMPLATE
+        if b.get("schema") != 1 or b.get("template") not in (TEMPLATE, GEN_TEMPLATE):
             return False, "bad schema/template"
         if not m.sig_b64:
             return False, "unsigned"
         if not verify_bytes(self.pub_key, canonical(b), m.sig_b64):
             return False, "bad signature"
-        if b.get("template_sha256") != self.digest():
+        if gen:
+            # A scheduler written on this device: its files, its operator approval and its
+            # kernel must all match what was signed. Imported lazily (genstore imports us).
+            from .genstore import check_artifact_dir
+            if b.get("ops_name") != GEN_OPS_NAME:
+                return False, "bad ops name"
+            ok, why = check_artifact_dir(m.artifact_dir, b, self.pub_key)
+            if not ok:
+                return False, why
+            if b.get("kernel_release") != self.release:
+                return False, f"generated for kernel {b.get('kernel_release')!r}, running {self.release!r}"
+        elif b.get("template_sha256") != self.digest():
             return False, "bpf object digest mismatch"
         if b.get("platform") != platform:
             return False, f"manifest for platform {b.get('platform')!r}, device is {platform!r}"

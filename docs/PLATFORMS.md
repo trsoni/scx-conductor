@@ -7,15 +7,18 @@ none has been measured on hardware. Tune per device and record results in `memor
 
 | Platform | Manifests | Canary | Watchdog | Notes |
 |---|---|---|---|---|
-| `laptop` | generated on device (dev key) or approved | yes, 3 s | 5 s | AC / battery / low-battery / thermal states (thermal limit 90 C) |
-| `mobile` | generated on device or approved | yes, 2 s | 3 s | tighter battery caps; thermal limit 80 C |
+| `laptop` | specialised on device (dev key), approved, or **model-written and operator-approved** | yes, 3 s | 5 s | AC / battery / low-battery / thermal states (thermal limit 90 C) |
+| `mobile` | as laptop | yes, 2 s | 3 s | tighter battery caps; thermal limit 80 C |
 | `iot` | **approved only** | no | 8 s | long slices (x2 to x4), low perf caps, thermal limit 85 C |
 | `automotive` | **approved only** | yes, 3 s | 1 s | allow-list: `ui`, `video`, `camera`, `graphics`; thermal limit 95 C |
-| `vm` | generated on device | yes, 2 s | 2 s | QEMU / CI target |
+| `vm` | as laptop | yes, 2 s | 2 s | QEMU / CI target |
 
 Detection order (`policy.detect_platform`): `--platform`, `CONDUCTOR_PLATFORM`, `/etc/conductor/platform`, Android
 `build.prop` (mobile), hypervisor flag (vm), DMI chassis type or a battery (laptop), else `iot` on ARM and `laptop` on
 x86. **Set it explicitly on products**; automotive is never guessed.
+
+`allow_device_generation` is true for `laptop`, `mobile` and `vm`, false for `iot` and `automotive`
+(which are also `approved_only`). Generation is still off unless the operator starts the daemon with a backend.
 
 Power state selects `perf_cap` (upper bound for the cpuperf hint) and `slice_scale` (longer slices off AC, so fewer
 context switches per unit of work).

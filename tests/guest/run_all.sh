@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs inside the QEMU guest (or any root shell on a sched_ext kernel).
-#   tests/guest/run_all.sh [skip-ab] [skip-e2e]
+#   tests/guest/run_all.sh [skip-ab] [skip-e2e] [skip-gen]
 # Prints one line per stage and writes build/guest-result.json.
 cd "$(dirname "$0")/../.." || exit 99
 REPO=$PWD
@@ -41,6 +41,7 @@ stage loader     -         python3 tests/guest/loader_smoke.py
 stage watchdog   -         python3 tests/guest/watchdog_test.py
 stage ab-latency skip-ab   python3 tests/guest/ab_latency.py
 stage governor   skip-e2e  python3 tests/guest/governor_e2e.py
+stage gen        skip-gen   python3 tests/guest/gen_e2e.py
 
 mkdir -p "$REPO/build"
 python3 - "$(uname -m)" "$(uname -r)" "${PASS[*]}" "${FAIL[*]}" "${SKIP[*]}" > "$REPO/build/guest-result.json" <<'PY'

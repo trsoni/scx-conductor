@@ -12,7 +12,7 @@ from conductord.daemon import ctl_request
 state = tempfile.mkdtemp(prefix="cstate-")
 sock = os.path.join(state, "ctl.sock")
 env = dict(os.environ, PYTHONPATH=ROOT, PYTHONDONTWRITEBYTECODE="1")
-gov = subprocess.Popen([sys.executable, "-I", "-m", "conductord", "run", "--platform", "vm",
+gov = subprocess.Popen([sys.executable, "-m", "conductord", "run", "--platform", "vm",
                         "--dev-self-sign", "--state", state, "--sock", sock,
                         "--bpf-obj", BPF_OBJ, "--loader", LOADER,
                         "--interval", "0.5", "--min-switch", "2", "--duration", "240"],

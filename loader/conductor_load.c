@@ -1,15 +1,27 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * conductor_load - loads ONE specialised instance of the scx_conductor
- * template, holds the struct_ops link, and exposes a tiny line protocol so the
- * governor needs no BPF bindings.
+ * conductor_load - loads ONE scheduler, holds the struct_ops link, and exposes a
+ * tiny line protocol so the governor needs no BPF bindings.
+ *
+ * Built twice from this one source:
+ *   default      : the reference template (bpf/scx_conductor.bpf.c). Specialised
+ *                  per workload through the rodata knobs below.
+ *   -DGEN_BUILD  : a scheduler written on the device (scx_gen skeleton, ops
+ *                  "gen_ops"). No knobs: the numbers are in the source. The loader
+ *                  forces the safety-relevant ops fields itself (watchdog timeout,
+ *                  flags) so generated source cannot choose them. The ops name
+ *                  cannot be forced (not exposed by skeletons); see below.
  *
  *   stdin  (governor -> loader)        stdout (loader -> governor, JSON lines)
  *   set <tgid> <cls>                   {"event":"attached","name":"conductor"}
- *   clr <tgid>                         {"event":"stats","stats":[..],"lat":[[..]..]}
- *   clrall                             {"event":"error","msg":"..."}
- *   stats                              {"event":"exited","ecode":N,"kernel_ejected":B}
- *   quit
+ *   clr <tgid>                         {"event":"verified","name":"conductor"}   (--verify-only)
+ *   clrall                             {"event":"stats","stats":[..],"lat":[[..]..]}
+ *   stats                              {"event":"error","msg":"..."}
+ *   quit                               {"event":"exited","ecode":N,"kernel_ejected":B}
+ *
+ * --verify-only loads the scheduler (the kernel verifier runs, struct_ops is
+ * validated) but never attaches it: nothing is scheduled by it, no other
+ * scheduler is displaced. Exit 0 = the kernel accepted it.
  *
  * Unloading = this process exiting (SIGTERM, "quit", or stdin EOF). Closing the
  * struct_ops link makes the kernel fall back to the fair class. If the kernel
@@ -26,8 +38,31 @@
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <scx/common.h>
-#include "scx_conductor.bpf.skel.h"
 #include "conductor.h"
+
+#ifdef GEN_BUILD
+#include "scx_gen.bpf.skel.h"
+#define SKEL_T		struct scx_gen
+#define SKEL_NAME	scx_gen
+#define OPS_NAME	gen_ops
+#define SCHED_NAME	"conductor_gen"
+#define SKEL_DESTROY(s)	scx_gen__destroy(s)
+#else
+#include "scx_conductor.bpf.skel.h"
+#define SKEL_T		struct scx_conductor
+#define SKEL_NAME	scx_conductor
+#define OPS_NAME	conductor_ops
+#define SCHED_NAME	"conductor"
+#define SKEL_DESTROY(s)	scx_conductor__destroy(s)
+#endif
+
+/* One level of indirection so the macro arguments are expanded before the scx
+ * macros paste them into identifiers. */
+#define OPEN_(ops, name)		SCX_OPS_OPEN(ops, name)
+#define LOAD_(skel, ops, name, uei)	SCX_OPS_LOAD(skel, ops, name, uei)
+#define ATTACH_(skel, ops, name)	SCX_OPS_ATTACH(skel, ops, name)
+
+#define GEN_TIMEOUT_DEFAULT_MS	5000
 
 static volatile sig_atomic_t exit_req;
 
@@ -78,7 +113,7 @@ static __u64 percpu_sum(int fd, __u32 key, int ncpu, __u64 *buf)
 	return sum;
 }
 
-static void emit_stats(struct scx_conductor *skel)
+static void emit_stats(SKEL_T *skel)
 {
 	int ncpu = libbpf_num_possible_cpus();
 	int sfd = bpf_map__fd(skel->maps.stats);
@@ -93,7 +128,7 @@ static void emit_stats(struct scx_conductor *skel)
 		return;
 
 	printf("{\"event\":\"stats\",\"stats\":[");
-	for (i = 0; i < NR_STATS; i++)
+	for (i = 0; i < CND_NR_STATS; i++)
 		printf("%s%llu", i ? "," : "",
 		       (unsigned long long)percpu_sum(sfd, i, ncpu, buf));
 	printf("],\"lat\":[");
@@ -110,7 +145,7 @@ static void emit_stats(struct scx_conductor *skel)
 	free(buf);
 }
 
-static void handle_line(struct scx_conductor *skel, char *line)
+static void handle_line(SKEL_T *skel, char *line)
 {
 	int fd = bpf_map__fd(skel->maps.tgid_class);
 	unsigned int tgid, cls;
@@ -144,11 +179,14 @@ static void handle_line(struct scx_conductor *skel, char *line)
 
 int main(int argc, char **argv)
 {
-	struct scx_conductor *skel;
+	SKEL_T *skel;
 	struct bpf_link *link;
 	__u64 slice[NR_CLS] = { 0 }, credit[NR_CLS] = { 0 }, charge[NR_CLS] = { 0 }, perf[NR_CLS] = { 0 };
 	int have_slice = 0, have_credit = 0, have_charge = 0, have_perf = 0;
-	int partial = 0, inject_stall = 0, timeout_ms = 0, opt, i;
+	int partial = 0, inject_stall = 0, timeout_ms = 0, verify_only = 0, opt;
+#ifndef GEN_BUILD
+	__u32 i;
+#endif
 	char inbuf[4096];
 	size_t inlen = 0;
 	long long ecode = 0;
@@ -162,6 +200,7 @@ int main(int argc, char **argv)
 		{ "timeout-ms", required_argument, 0, 't' },
 		{ "partial",    no_argument,       0, 'p' },
 		{ "inject-stall", no_argument,     0, 'X' },
+		{ "verify-only", no_argument,      0, 'V' },
 		{ 0, 0, 0, 0 }
 	};
 
@@ -179,16 +218,36 @@ int main(int argc, char **argv)
 		case 't': timeout_ms = atoi(optarg); break;
 		case 'p': partial = 1; break;
 		case 'X': inject_stall = 1; break;
+		case 'V': verify_only = 1; break;
 		default:
 			fprintf(stderr, "usage: %s [--slice-ns a,b,c,d] [--credit-ns ..] "
-				"[--charge-pct ..] [--perf ..] [--timeout-ms N] [--partial]\n",
+				"[--charge-pct ..] [--perf ..] [--timeout-ms N] [--partial] "
+				"[--verify-only]\n",
 				argv[0]);
 			return 2;
 		}
 	}
 
-	skel = SCX_OPS_OPEN(conductor_ops, scx_conductor);
+#ifdef GEN_BUILD
+	/* Generated source has no knobs: numbers live in the source. Refuse knob
+	 * flags rather than silently ignoring them. */
+	if (have_slice || have_credit || have_charge || have_perf || inject_stall) {
+		fprintf(stderr, "knob flags are not supported for a generated scheduler\n");
+		return 2;
+	}
+#endif
 
+	skel = OPEN_(OPS_NAME, SKEL_NAME);
+
+#ifdef GEN_BUILD
+	/* The safety-relevant fields are the loader's, not the source's. */
+	if (timeout_ms <= 0)
+		timeout_ms = GEN_TIMEOUT_DEFAULT_MS;
+	skel->struct_ops.OPS_NAME->flags = 0;
+	/* The ops name is a char array the skeleton does not expose, so it cannot be
+	 * forced here: the static gate pins it in the source and the lifecycle checks
+	 * /sys/kernel/sched_ext/root/ops after attach. */
+#else
 	/* Specialise: rodata is frozen at load, so the verifier sees constants. */
 	for (i = 0; i < NR_CLS; i++) {
 		if (have_slice)  skel->rodata->slice_ns[i] = slice[i];
@@ -197,16 +256,26 @@ int main(int argc, char **argv)
 		if (have_perf)   skel->rodata->perf_target[i] = (__u32)perf[i];
 	}
 	skel->rodata->inject_stall = inject_stall;
+#endif
 
 	if (timeout_ms > 0)
-		skel->struct_ops.conductor_ops->timeout_ms = timeout_ms;
+		skel->struct_ops.OPS_NAME->timeout_ms = timeout_ms;
 	if (partial)
-		skel->struct_ops.conductor_ops->flags |= SCX_OPS_SWITCH_PARTIAL;
+		skel->struct_ops.OPS_NAME->flags |= SCX_OPS_SWITCH_PARTIAL;
 
-	SCX_OPS_LOAD(skel, conductor_ops, scx_conductor, uei);
-	link = SCX_OPS_ATTACH(skel, conductor_ops, scx_conductor);
+	/* Loading runs the kernel verifier and validates the struct_ops map. */
+	LOAD_(skel, OPS_NAME, SKEL_NAME, uei);
 
-	printf("{\"event\":\"attached\",\"name\":\"conductor\",\"partial\":%d}\n", partial);
+	if (verify_only) {
+		printf("{\"event\":\"verified\",\"name\":\"%s\"}\n", SCHED_NAME);
+		fflush(stdout);
+		SKEL_DESTROY(skel);
+		return 0;
+	}
+
+	link = ATTACH_(skel, OPS_NAME, SKEL_NAME);
+
+	printf("{\"event\":\"attached\",\"name\":\"%s\",\"partial\":%d}\n", SCHED_NAME, partial);
 	fflush(stdout);
 
 	while (!exit_req && !UEI_EXITED(skel, uei)) {
@@ -237,6 +306,6 @@ int main(int argc, char **argv)
 	ecode = UEI_REPORT(skel, uei);
 	printf("{\"event\":\"exited\",\"ecode\":%lld,\"kernel_ejected\":%d}\n", ecode, kernel_ejected);
 	fflush(stdout);
-	scx_conductor__destroy(skel);
+	SKEL_DESTROY(skel);
 	return kernel_ejected ? 3 : 0;
 }

@@ -1,8 +1,10 @@
 # Reproducing: build, QEMU (x86_64 and arm64), bare metal
 
-> **Status:** nothing in this file has been executed by the author. The Python parts are tested; the kernel, rootfs,
-> BPF build and QEMU steps are written from the kernel.org sched_ext documentation and standard tooling. Expect to
-> fix a small number of first-run issues, and record them in `memory/test-log.md`.
+> **Status:** the Python parts are tested (211 unit tests). The BPF template, the loader and the generation pipeline
+> were compiled and run up to the kernel verifier on x86_64 in the authoring sandbox, which has no sched_ext kernel.
+> The kernel, rootfs and QEMU steps below are written from the kernel.org sched_ext documentation and standard tooling
+> and **have never been executed**. Expect a small number of first-run issues and record them in `memory/test-log.md`.
+> To try on-device generation on a laptop, start with `docs/LAPTOP.md`.
 
 ## 0. Host prerequisites
 
@@ -40,7 +42,7 @@ sudo tools/qemu/make-rootfs.sh x86_64
 sudo tools/qemu/make-rootfs.sh arm64
 ```
 
-A Debian trixie image with clang, libbpf, bpftool, python3, openssl, stress-ng, tpm2-tools. The repo itself is not
+A Debian trixie image with clang, libbpf, bpftool, python3, openssl, stress-ng, tpm2-tools. The `gen` stage builds BPF inside the guest, so clang, bpftool and libbpf must be there (they are, for the `build` stage). The repo itself is not
 baked in: it is shared into the guest over virtio-9p at `/repo`, so host edits are visible immediately. The guest
 compiles the BPF program and loader itself (into a tmpfs `/tmp/cbuild`), so binaries are always the right
 architecture and the two architectures never overwrite each other.
@@ -50,14 +52,14 @@ architecture and the two architectures never overwrite each other.
 ```bash
 tools/qemu/run-qemu.sh x86_64
 tools/qemu/run-qemu.sh arm64            # TCG on an x86 host: slow (compile happens in the guest)
-tools/qemu/run-qemu.sh arm64 -- skip-ab,skip-e2e    # faster subset
+tools/qemu/run-qemu.sh arm64 -- skip-ab,skip-e2e,skip-gen    # faster subset
 ```
 
 `run-qemu.sh` boots with `-enable-kvm` when host and target architectures match and `/dev/kvm` is writable, else TCG.
 It prints the serial console, stores it in `build/qemu-<arch>.log`, and exits 0 only if the guest printed
 `CONDUCTOR-GUEST-RESULT: PASS`. Per-stage results land in `build/guest-result.json`.
 
-Stages (details in `docs/TESTING.md`): `env`, `build`, `unit`, `loader`, `watchdog`, `ab-latency`, `governor`.
+Stages (details in `docs/TESTING.md`): `env`, `build`, `unit`, `loader`, `watchdog`, `ab-latency`, `governor`, `gen`.
 
 Defaults: 4 vCPUs, 4 GiB, 1 h timeout. Override with `SMP=8 MEM=8G TIMEOUT=7200`.
 
@@ -77,7 +79,10 @@ Needs root, a kernel with `CONFIG_SCHED_CLASS_EXT=y`, `CONFIG_DEBUG_INFO_BTF=y`,
 tools/fetch-scx-include.sh ~/linux          # or point SCX_INC at your distro's scx headers
 make                                         # build/conductor_load + build/scx_conductor.bpf.o
 sudo bash tests/guest/run_all.sh             # same stages as QEMU, on this machine
+sudo python3 -m conductord doctor            # can this machine build, verify and load generated schedulers?
 ```
+
+`tools/fetch-scx-include.sh` accepts either a Linux tree or a checkout of github.com/sched-ext/scx.
 
 Warning: the `watchdog` and `governor` stages load a real scheduler on the machine. They use partial mode for the
 stall test, but the `ab-latency` and `governor` stages run a full-system scheduler for tens of seconds. Do it on a
@@ -98,6 +103,11 @@ python3 -m conductord audit-verify /var/lib/conductor/audit.jsonl
 
 A key held on the same device does not defend against a compromised root; it protects against bugs and corruption
 between forge and loader. For anything exposed, use approved-only manifests.
+
+### On-device generation
+
+`conductord gen / gen-list / gen-show / gen-approve / gen-reject / doctor`, plus `run --gen-backend ... [--gen-on-demand]`.
+Procedure, recovery and what to record: **`docs/LAPTOP.md`**. Design: `docs/ARCHITECTURE.md` section 3b.
 
 ### Approved-only flow (iot, automotive)
 

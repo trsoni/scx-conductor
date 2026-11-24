@@ -30,7 +30,7 @@ enum conductor_stat {
 	ST_ENQ_CLS3,
 	ST_CREDIT_APPLIED,	/* sleeper credit actually clamped a vtime */
 	ST_PERF_SET,		/* cpuperf hints issued */
-	NR_STATS,
+	CND_NR_STATS,
 };
 
 #endif /* __SCX_CONDUCTOR_H */

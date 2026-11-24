@@ -32,9 +32,37 @@ def csv(v) -> str:
     return ",".join(str(int(x)) for x in v)
 
 
+def verify_only(loader_path: str, timeout: float = 60.0, runner=subprocess.run) -> tuple:
+    """Load a scheduler WITHOUT attaching it and report whether the kernel accepted it.
+
+    The loader's --verify-only mode opens and loads the skeleton, which runs the kernel
+    BPF verifier and struct_ops validation, then exits. Nothing is scheduled by the
+    program and no running sched_ext scheduler is displaced, so this is safe to run at
+    any time. Returns (ok, message); on failure the message is the tail of the loader's
+    stderr, which carries libbpf's verifier log (the generation repair loop feeds it back).
+    """
+    try:
+        r = runner([loader_path, "--verify-only", "--timeout-ms", "5000"],
+                   capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"loader could not run: {type(e).__name__}: {e}"
+    out = (r.stdout or b"").decode(errors="replace")
+    err = (r.stderr or b"").decode(errors="replace")
+    if r.returncode == 0 and '"verified"' in out:
+        return True, "accepted by the kernel (loaded without attaching)"
+    return False, (err or out or f"loader exited {r.returncode}")[-ERR_TAIL:]
+
+
+ERR_TAIL = 4000
+
+
 class LoaderHost:
-    def __init__(self, loader_path: str, sysfs: str = SYSFS, extra_args: Optional[list] = None):
-        self.loader_path, self.sysfs = loader_path, sysfs
+    """`knobs=False` is for generated schedulers: their numbers live in the source, and the
+    generated loader refuses the rodata knob flags."""
+
+    def __init__(self, loader_path: str, sysfs: str = SYSFS, extra_args: Optional[list] = None,
+                 knobs: bool = True):
+        self.loader_path, self.sysfs, self.knobs = loader_path, sysfs, knobs
         self.extra_args = extra_args or []
         self.proc: Optional[subprocess.Popen] = None
         self._buf = b""
@@ -65,12 +93,15 @@ class LoaderHost:
         """Returns (ok, detail)."""
         if self.proc:
             self.stop()
-        cmd = [self.loader_path, "--slice-ns", csv(p.slice_ns), "--credit-ns", csv(p.credit_ns),
-               "--charge-pct", csv(p.charge_pct), "--perf", csv(p.perf),
-               "--timeout-ms", str(p.timeout_ms)] + self.extra_args
+        if self.knobs:
+            cmd = [self.loader_path, "--slice-ns", csv(p.slice_ns), "--credit-ns", csv(p.credit_ns),
+                   "--charge-pct", csv(p.charge_pct), "--perf", csv(p.perf),
+                   "--timeout-ms", str(p.timeout_ms)] + self.extra_args
+        else:
+            cmd = [self.loader_path, "--timeout-ms", str(p.timeout_ms)] + self.extra_args
         if partial:
             cmd.append("--partial")
-        if inject_stall:
+        if inject_stall and self.knobs:
             cmd.append("--inject-stall")
         self._buf, self.exit_info = b"", None
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -81,7 +112,7 @@ class LoaderHost:
             if self.proc.poll() is not None:
                 err = self.proc.stderr.read() or b""
             self._kill()
-            return False, f"loader did not attach: {err.decode(errors='replace')[-400:]}"
+            return False, f"loader did not attach: {err.decode(errors='replace')[-ERR_TAIL:]}"
         return True, "attached"
 
     def _send(self, line: str) -> bool:
@@ -114,11 +145,20 @@ class LoaderHost:
     def sched_ext_state(self) -> dict:
         return read_sched_ext(self.sysfs)
 
+    def _close_pipes(self):
+        for f in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+            try:
+                if f:
+                    f.close()
+            except OSError:
+                pass
+
     def _kill(self):
         if self.proc and self.proc.poll() is None:
             self.proc.kill()
         if self.proc:
             self.proc.wait()
+            self._close_pipes()
         self.proc = None
 
     def stop(self, timeout: float = 5.0) -> dict:
@@ -147,6 +187,7 @@ class LoaderHost:
         except (OSError, ValueError):
             pass
         self.exit_info = info
+        self._close_pipes()
         self.proc = None
         return info
 

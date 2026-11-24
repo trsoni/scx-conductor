@@ -14,7 +14,7 @@
   },
   "platforms": {
     "laptop": {
-      "timeout_ms": 5000, "canary": true, "canary_s": 3, "approved_only": false,
+      "timeout_ms": 5000, "canary": true, "canary_s": 3, "approved_only": false, "allow_device_generation": true,
       "states": {
         "ac":          {"perf_cap": 1024, "slice_scale": 1.0},
         "battery":     {"perf_cap": 640,  "slice_scale": 1.5},
@@ -23,7 +23,7 @@
       }
     },
     "mobile": {
-      "timeout_ms": 3000, "canary": true, "canary_s": 2, "approved_only": false,
+      "timeout_ms": 3000, "canary": true, "canary_s": 2, "approved_only": false, "allow_device_generation": true,
       "states": {
         "ac":          {"perf_cap": 896, "slice_scale": 1.0},
         "battery":     {"perf_cap": 640, "slice_scale": 1.25},
@@ -32,7 +32,7 @@
       }
     },
     "iot": {
-      "timeout_ms": 8000, "canary": false, "canary_s": 0, "approved_only": true,
+      "timeout_ms": 8000, "canary": false, "canary_s": 0, "approved_only": true, "allow_device_generation": false,
       "states": {
         "ac":          {"perf_cap": 512, "slice_scale": 2.0},
         "battery":     {"perf_cap": 384, "slice_scale": 3.0},
@@ -41,7 +41,7 @@
       }
     },
     "automotive": {
-      "timeout_ms": 1000, "canary": true, "canary_s": 3, "approved_only": true,
+      "timeout_ms": 1000, "canary": true, "canary_s": 3, "approved_only": true, "allow_device_generation": false,
       "allowed_workloads": ["ui", "video", "camera", "graphics"],
       "states": {
         "ac":          {"perf_cap": 1024, "slice_scale": 1.0},
@@ -51,7 +51,7 @@
       }
     },
     "vm": {
-      "timeout_ms": 2000, "canary": true, "canary_s": 2, "approved_only": false,
+      "timeout_ms": 2000, "canary": true, "canary_s": 2, "approved_only": false, "allow_device_generation": true,
       "states": {
         "ac":          {"perf_cap": 1024, "slice_scale": 1.0},
         "battery":     {"perf_cap": 640,  "slice_scale": 1.5},
