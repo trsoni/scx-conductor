@@ -23,9 +23,8 @@ test on QEMU; deliver architecture diagrams, reproduction md files and memory md
 - **Never run:** any load into a kernel, the kernel verifier's verdict (including whether `--verify-only` validates
   without attaching), canary, watchdog, QEMU, a real model backend, `tests/guest/gen_e2e.py`.
 - No performance or power data exists.
-- Owner asked for the artifacts on github.com/trsoni: **not done**. No GitHub link/valid token in the session and no
-  repo name was given. Assumed name `trsoni/scx-conductor`; the owner has to link GitHub and create the repo (or run
-  the push commands themselves).
+- Published 2026-11-24 as a public repository: https://github.com/trsoni/scx-conductor (branch `main`, history pushed,
+  not a tarball). No licence chosen yet for the non-BPF parts; a public repo without one is all rights reserved.
 
 ## How to run
 - Logic tests: `python3 -m unittest discover -s tests`

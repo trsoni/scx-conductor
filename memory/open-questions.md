@@ -24,6 +24,7 @@
 12. **Hint producers**: Android top-app, automotive HMI, GNOME/KDE game-mode.
 13. **Production signing**: key custody, rotation, revocation, real TPM PCR policy; approval on a separate machine.
 14. **Android / GKI**: does the target kernel enable sched_ext at all?
-15. **GitHub upload** to github.com/trsoni: needs the owner to link GitHub and name or create the repository.
+15. **Licence**: the repo is public at github.com/trsoni/scx-conductor with no licence file; BPF and loader are marked GPL-2.0,
+    the rest is undecided (same as item 16).
 16. Choose a licence for the non-BPF parts.
 17. Fuzz `genstatic.check` and the object checks; today they are tested with hand-written hostile inputs only.

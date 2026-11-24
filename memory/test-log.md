@@ -30,7 +30,10 @@ NOT RUN
 - A real model backend (`anthropic`, `command`): only scripted fakes and the deterministic `template` backend.
 - `tests/guest/gen_e2e.py` and the `gen` stage of `run_all.sh`: written and syntax-checked only.
 - `tests/guest/governor_e2e.py` after the `-I` fix: not run.
-- QEMU x86_64 / arm64, TPM path, arm64 loader link, GitHub upload (no GitHub link; repo name not given).
+- QEMU x86_64 / arm64, TPM path, arm64 loader link.
+
+Done 2026-11-24: public repo `trsoni/scx-conductor` created (empty, no README/licence/.gitignore) and `main` pushed; remote HEAD
+`ef131c4` equals local HEAD, 2 commits, 76 files, no tarball or keys in the tree.
 
 ## 2026-11-23 (earlier) - authoring sandbox (x86_64, Linux 6.18, Python 3.12.3, openssl 3.0.13)
 (Superseded in part by the entry above: at this point there was no clang/bpftool/libbpf and 62 unit tests.)
